@@ -35,7 +35,7 @@ import ml_collections
 import numpy as np
 import tensorflow as tf
 import uncertainty_baselines as ub
-import batchensemble_utils  # local file import
+from  baselines.jft import batchensemble_utils  # local file import
 
 # TODO(dusenberrymw): Open-source remaining imports.
 u = None

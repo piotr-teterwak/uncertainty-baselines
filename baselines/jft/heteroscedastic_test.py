@@ -26,8 +26,8 @@ import jax
 import ml_collections
 import tensorflow as tf
 import tensorflow_datasets as tfds
-import checkpoint_utils  # local file import
-import heteroscedastic  # local file import
+from  baselines.jft import checkpoint_utils  # local file import
+from  baselines.jft import heteroscedastic  # local file import
 
 flags.adopt_module_key_flags(heteroscedastic)
 FLAGS = flags.FLAGS
