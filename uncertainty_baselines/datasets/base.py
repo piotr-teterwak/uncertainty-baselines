@@ -476,6 +476,14 @@ def make_ood_dataset(ood_dataset_cls: _BaseDatasetClass) -> _BaseDatasetClass:
           self._in_distribution_dataset.num_examples +
           super().num_examples)
 
+    @property
+    def in_distribution_num_examples(self):
+      return self._in_distribution_dataset.num_examples
+
+    @property
+    def ood_num_examples(self):
+      return super().num_examples
+
   return _OodBaseDataset
 
 
