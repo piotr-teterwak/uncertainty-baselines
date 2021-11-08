@@ -1,25 +1,3 @@
-# coding=utf-8
-# Copyright 2021 The Uncertainty Baselines Authors.
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
-
-"""Ensemble on CIFAR.
-
-This script only performs evaluation, not training. We recommend training
-ensembles by launching independent runs of `deterministic.py` over different
-seeds.
-"""
-
 import os
 
 from absl import app
@@ -33,23 +11,15 @@ import tensorflow_datasets as tfds
 import uncertainty_baselines as ub
 import utils  # local file import
 
-
 from classification_models.tfkeras import Classifiers
 
 flags.DEFINE_string('checkpoint_dir', None,
                     'The directory where the model weights are stored.')
 flags.mark_flag_as_required('checkpoint_dir')
-# flags.DEFINE_bool('resnet_18', False, 'Whether to use ResNet 18')
-flags.DEFINE_bool('no_corrupt', False, 'Whether to test cifarc')
-flags.DEFINE_bool('resnet', False, 'Whether to use ResNet')
 flags.DEFINE_string('resnet_depth','18','Depth of resnet')
-
-flags.DEFINE_bool('single_model', False, 'Whether only testing single model')
 
 flags.DEFINE_string('reset_stage_1', None, 'Which block to reset')
 flags.DEFINE_string('reset_stage_2', None, 'Which block to reset')
-flags.DEFINE_string('reset_stage_3', None, 'Which block to reset')
-flags.DEFINE_string('reset_stage_4', None, 'Which block to reset')
 
 FLAGS = flags.FLAGS
 
@@ -58,15 +28,6 @@ def parse_checkpoint_dir(checkpoint_dir):
   """Parse directory of checkpoints."""
   paths = []
   is_checkpoint = lambda f: ('checkpoint' in f and '.index' in f)
-
-  if FLAGS.single_model:
-    for path, _, files in tf.io.gfile.walk(checkpoint_dir):
-      if any(f for f in files if is_checkpoint(f)):
-        latest_checkpoint_without_suffix = tf.train.latest_checkpoint(path)
-        # paths.append(os.path.join(path, latest_checkpoint_without_suffix))
-        paths.append(latest_checkpoint_without_suffix)
-        break
-    return paths
 
   subdirectories = tf.io.gfile.glob(os.path.join(checkpoint_dir, '*'))
   for subdir in subdirectories:
@@ -100,39 +61,20 @@ def main(argv):
   steps_per_eval = ds_info.splits['test'].num_examples // batch_size
   num_classes = ds_info.features['label'].num_classes
 
-  if FLAGS.no_corrupt:
-    corruption_types = []
-  else:
-    corruption_types, _ = utils.load_corrupted_test_info(FLAGS.dataset)
-  for corruption_type in corruption_types:
-    for severity in range(1, 6):
-      dataset = ub.datasets.get(
-          f'{FLAGS.dataset}_corrupted',
-          corruption_type=corruption_type,
-          data_dir = FLAGS.data_dir,
-          download_data=FLAGS.download_data,
-          severity=severity,
-          split=tfds.Split.TEST).load(batch_size=batch_size)
-      test_datasets[f'{corruption_type}_{severity}'] = dataset
-  if FLAGS.resnet:
-    ResNet, preprocess_input = Classifiers.get('resnet{}'.format(FLAGS.resnet_depth))
-    inputs = tf.keras.layers.Input((32,32,3))
-    reshaped_inputs = tf.image.resize(inputs, [224,224], method='bicubic')
-    rescaled_inputs = reshaped_inputs * 255.
-    resnet_trunk = ResNet((224, 224, 3), l2=FLAGS.l2, weights=None, include_top=False)(rescaled_inputs)
-    pooled_resnet = tf.keras.layers.GlobalAveragePooling2D()(resnet_trunk)
-    output = tf.keras.layers.Dense(num_classes, kernel_initializer=tf.keras.initializers.HeNormal(),
-          kernel_regularizer=tf.keras.regularizers.l2(FLAGS.l2),
-          bias_regularizer=tf.keras.regularizers.l2(FLAGS.l2))(pooled_resnet)
-    model = tf.keras.Model(inputs=inputs, outputs=output,name='pretrained_resnet_{}'.format(FLAGS.resnet_depth))
-  else:
-    model = ub.models.wide_resnet(
-      input_shape=ds_info.features['image'].shape,
-      depth=28,
-      width_multiplier=10,
-      num_classes=num_classes,
-      l2=0.,
-      version=2)
+  ResNet, preprocess_input = Classifiers.get('resnet{}'.format(FLAGS.resnet_depth))
+  inputs = tf.keras.layers.Input((32,32,3))
+  reshaped_inputs = tf.image.resize(inputs, [224,224], method='bicubic')
+  rescaled_inputs = reshaped_inputs * 255.
+  resnet_trunk = ResNet((224, 224, 3), l2=FLAGS.l2, weights=None, include_top=False)(rescaled_inputs)
+  pooled_resnet = tf.keras.layers.GlobalAveragePooling2D()(resnet_trunk)
+  output = tf.keras.layers.Dense(num_classes, kernel_initializer=tf.keras.initializers.HeNormal(),
+        kernel_regularizer=tf.keras.regularizers.l2(FLAGS.l2),
+        bias_regularizer=tf.keras.regularizers.l2(FLAGS.l2))(pooled_resnet)
+  model_1 = tf.keras.Model(inputs=inputs, outputs=output,name='pretrained_resnet_{}'.format(FLAGS.resnet_depth))
+  model_2 = tf.keras.Model(inputs=inputs, outputs=output,name='pretrained_resnet_{}'.format(FLAGS.resnet_depth))
+  model = tf.keras.Model(inputs=inputs, outputs=output,name='pretrained_resnet_{}'.format(FLAGS.resnet_depth))
+
+
   logging.info('Model input shape: %s', model.input_shape)
   logging.info('Model output shape: %s', model.output_shape)
   logging.info('Model number of weights: %s', model.count_params())
@@ -144,14 +86,30 @@ def main(argv):
   logging.info('Ensemble number of weights: %s',
                ensemble_size * model.count_params())
   logging.info('Ensemble filenames: %s', str(ensemble_filenames))
-  checkpoint = tf.train.Checkpoint(model=model)
+  checkpoint = tf.train.Checkpoint(model=model_1)
+  checkpoint_2 = tf.train.Checkpoint(model=model_2)
 
-  # Write model predictions to files.
-  num_datasets = len(test_datasets)
-  for m, ensemble_filename in enumerate(ensemble_filenames):
-    checkpoint.restore(ensemble_filename).expect_partial()
+  num_inters = 11
+  checkpoint.restore(ensemble_filenames[0]).expect_partial()
+  weights_1 = model_1.get_weights()
+  checkpoint_2.restore(ensemble_filenames[1]).expect_partial()
+  weights_2 = model_2.get_weights()
+
+  inter_weights = np.linspace(0, 1, num_inters)
+  for m in range(num_inters):
+    updated_weights = []
+    for i in range(len(weights_2)):
+      updated_weights.append((1-inter_weights[m])*weights_1[i] + inter_weights[m]*weights_2[i])
+    model.set_weights(updated_weights)
+
+    logging.info(model.get_weights()[0])
+    logging.info(weights_2[0])
+    logging.info(weights_1[0])
+
+# Write model predictions to files.
+    num_datasets = len(test_datasets)
     for n, (name, test_dataset) in enumerate(test_datasets.items()):
-      filename = '{dataset}_{member}.npy'.format(dataset=name, member=m)
+      filename = 'interpolate_{member}.npy'.format(member=m)
       filename = os.path.join(FLAGS.output_dir, filename)
       if not tf.io.gfile.exists(filename):
         logits = []
@@ -165,7 +123,7 @@ def main(argv):
           np.save(f, logits.numpy())
       percent = (m * num_datasets + (n + 1)) / (ensemble_size * num_datasets)
       message = ('{:.1%} completion for prediction: ensemble member {:d}/{:d}. '
-                 'Dataset {:d}/{:d}'.format(percent,
+                  'Dataset {:d}/{:d}'.format(percent,
                                             m + 1,
                                             ensemble_size,
                                             n + 1,
@@ -180,14 +138,8 @@ def main(argv):
           num_bins=FLAGS.num_bins),
       'test/diversity': rm.metrics.AveragePairwiseDiversity(normalize_disagreement=False),
   }
-  corrupt_metrics = {}
-  for name in test_datasets:
-    corrupt_metrics['test/nll_{}'.format(name)] = tf.keras.metrics.Mean()
-    corrupt_metrics['test/accuracy_{}'.format(name)] = (
-        tf.keras.metrics.SparseCategoricalAccuracy())
-    corrupt_metrics['test/ece_{}'.format(name)] = (
-        rm.metrics.ExpectedCalibrationError(num_bins=FLAGS.num_bins))
-  for i in range(ensemble_size):
+  
+  for i in range(num_inters):
     metrics['test/nll_member_{}'.format(i)] = tf.keras.metrics.Mean()
     metrics['test/accuracy_member_{}'.format(i)] = (
         tf.keras.metrics.SparseCategoricalAccuracy())
@@ -195,8 +147,8 @@ def main(argv):
   # Evaluate model predictions.
   for n, (name, test_dataset) in enumerate(test_datasets.items()):
     logits_dataset = []
-    for m in range(ensemble_size):
-      filename = '{dataset}_{member}.npy'.format(dataset=name, member=m)
+    for m in range(num_inters):
+      filename = 'interpolate_{member}.npy'.format(member=m)
       filename = os.path.join(FLAGS.output_dir, filename)
       with tf.io.gfile.GFile(filename, 'rb') as f:
         logits_dataset.append(np.load(f))
@@ -223,7 +175,7 @@ def main(argv):
         metrics['test/accuracy'].update_state(labels, probs)
         metrics['test/ece'].add_batch(probs, label=labels)
 
-        for i in range(ensemble_size):
+        for i in range(num_inters):
           member_probs = per_probs[i]
           member_loss = tf.keras.losses.sparse_categorical_crossentropy(
               labels, member_probs)
@@ -231,22 +183,12 @@ def main(argv):
           metrics['test/accuracy_member_{}'.format(i)].update_state(
               labels, member_probs)
         metrics['test/diversity'].add_batch(per_probs)
-      else:
-        corrupt_metrics['test/nll_{}'.format(name)].update_state(
-            negative_log_likelihood)
-        corrupt_metrics['test/accuracy_{}'.format(name)].update_state(
-            labels, probs)
-        corrupt_metrics['test/ece_{}'.format(name)].add_batch(
-            probs, label=labels)
 
     message = ('{:.1%} completion for evaluation: dataset {:d}/{:d}'.format(
         (n + 1) / num_datasets, n + 1, num_datasets))
     logging.info(message)
 
-  corrupt_results = utils.aggregate_corrupt_metrics(corrupt_metrics,
-                                                    corruption_types)
   total_results = {name: metric.result() for name, metric in metrics.items()}
-  total_results.update(corrupt_results)
   # Results from Robustness Metrics themselves return a dict, so flatten them.
   total_results = utils.flatten_dictionary(total_results)
   logging.info('Metrics: %s', total_results)

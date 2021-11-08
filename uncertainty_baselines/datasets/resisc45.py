@@ -1,30 +1,17 @@
-# coding=utf-8
-# Copyright 2021 The Uncertainty Baselines Authors.
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
-
-"""Kaggle diabetic retinopathy detection dataset builder."""
+"""resisc45 dataset builder."""
 
 from typing import Dict, Optional
 
 import tensorflow as tf
-import tensorflow_addons.image as tfa_image
 import tensorflow_datasets as tfds
 from uncertainty_baselines.datasets import base
 
+TRAIN_SPLIT_PERCENT = 60
+VALIDATION_SPLIT_PERCENT = 20
+TEST_SPLIT_PERCENT = 20
 
-class DiabeticRetinopathyDetectionDataset(base.BaseDataset):
-  """Kaggle diabetic retinopathy detection dataset builder class."""
+class Resisc45Dataset(base.BaseDataset):
+  """resisc45 dataset builder class."""
 
   def __init__(
       self,
@@ -34,7 +21,7 @@ class DiabeticRetinopathyDetectionDataset(base.BaseDataset):
       data_dir: Optional[str] = None,
       download_data: bool = False,
       is_training: Optional[bool] = None):
-    """Create a Kaggle diabetic retinopathy detection tf.data.Dataset builder.
+    """Create a resisc45 tf.data.Dataset builder.
 
     Args:
       split: a dataset split, either a custom tfds.Split or one of the
@@ -54,24 +41,62 @@ class DiabeticRetinopathyDetectionDataset(base.BaseDataset):
     if is_training is None:
       is_training = split in ['train', tfds.Split.TRAIN]
     dataset_builder = tfds.builder(
-        'diabetic_retinopathy_detection/btgraham-300', data_dir=data_dir)
+        'resisc45', data_dir=data_dir)
+
+    num_examples = dataset_builder.info.splits["train"].num_examples
+    train_count = num_examples * TRAIN_SPLIT_PERCENT // 100
+    val_count = num_examples * VALIDATION_SPLIT_PERCENT // 100
+    test_count = num_examples * TEST_SPLIT_PERCENT // 100
+    
     super().__init__(
-        name='diabetic_retinopathy_detection',
+        name='resisc45',
         dataset_builder=dataset_builder,
-        split=split,
+        split=self._get_split(split, train_count, val_count, test_count),
         is_training=is_training,
         shuffle_buffer_size=shuffle_buffer_size,
         num_parallel_parser_calls=num_parallel_parser_calls,
         download_data=download_data)
 
+  def _get_split(self, split_name, train_count, val_count, test_count):
+    tfds_splits = {
+        "train":
+            "train[:{}]".format(train_count),
+        "validation":
+            "train[{}:{}]".format(train_count, train_count + val_count),
+        "trainval":
+            "train[:{}]".format(train_count + val_count),
+        "test":
+            "train[{}:]".format(train_count + val_count),
+        "train800":
+            "train[:800]",
+        "val200":
+            "train[{}:{}]".format(train_count, train_count+200),
+        "train800val200":
+            "train[:800]+train[{}:{}]".format(train_count, train_count+200),
+    }
+
+    # # Creates a dict with example counts for each split.
+    # num_samples_splits = {
+    #     "train": train_count,
+    #     "val": val_count,
+    #     "trainval": train_count + val_count,
+    #     "test": test_count,
+    #     "train800": 800,
+    #     "val200": 200,
+    #     "train800val200": 1000,
+    # }
+
+    return tfds_splits[split_name]
+
+
   def _create_process_example_fn(self) -> base.PreProcessFn:
 
     def _example_parser(example: Dict[str, tf.Tensor]) -> Dict[str, tf.Tensor]:
       """A pre-process function to return images in [0, 1]."""
-      
-      if self.split == tfds.Split.TRAIN:
-          image = example['image']
-          image = tf.image.convert_image_dtype(image, tf.float32)
+      image = example['image']
+      image = tf.image.convert_image_dtype(image, tf.float32)
+
+      if self._is_training:
 
           # Inception Crop
           width = tf.cast(tf.shape(image),tf.float32)[1]
@@ -83,22 +108,18 @@ class DiabeticRetinopathyDetectionDataset(base.BaseDataset):
           image = tf.image.random_crop(image, [crop_size,crop_size,3])
           image = tf.image.resize(image, [224,224])
           image = tf.image.random_flip_left_right(image)
+
       else:
-          image = example['image']
-          image = tf.image.convert_image_dtype(image, tf.float32)
+          offset_width = (256 - 224) // 2
+          offset_height = (256 - 224) // 2
+          image = tf.image.crop_to_bounding_box(image, offset_height, offset_width, 224,224)
 
-          # Resize to 352 then crop to 320
-          image = tf.image.resize(image, [352, 352])
-          offset_width = (352 - 320) // 2
-          offset_height = (352 - 320) // 2
-          image = tf.image.crop_to_bounding_box(image, offset_height, offset_width, 320,320)
-
-      label = tf.one_hot(example['label'], 5, dtype=tf.float32)
+      label = tf.one_hot(example['label'], 45, dtype=tf.float32)
       
       parsed_example = {
           'features': image,
           'labels': label,
-          'name': example['name'],
+          'name': example['filename'],
       }
       return parsed_example
 

@@ -21,7 +21,7 @@ example, l2 instead of weight decay, and a different parameterization for SGD's
 momentum.
 """
 
-import os
+import os, sys
 import random
 import time
 from absl import app
@@ -87,13 +87,16 @@ flags.DEFINE_integer('reset_stage', None, 'Which block to reset')
 flags.DEFINE_integer('final_layer_reset', None, 'Resetting final layers')
 flags.DEFINE_integer('unit_2_reset', None, 'How many final units to reset.')
 
+flags.DEFINE_float('inter_weight', 0.0, 'DropBlock interpolation weight where new weight = (1-inter_weight)random_weight + inter_weight*pretrained_weight')
+
 
 FLAGS = flags.FLAGS
 
 def reinitialize_model(model, probability=0.0, reset_stage_idx=None, final_layer_reset=None, unit_2_reset=None):
   if FLAGS.resnet_depth == '18':
+    # conv3 1, conv4 1, and conv5 1 (downsampling) --- 2/1, 3/1, 4/1
     residual_blocks = ['stage1_unit1','stage1_unit2','stage2_unit1','stage2_unit2','stage3_unit1','stage3_unit2','stage4_unit1','stage4_unit2' ]
-  elif FLAGS.resnet_depth =='34':
+  elif FLAGS.resnet_depth in ['34', '50']:
     config = [3,4,6,3]
     residual_blocks = []
     for i, num in enumerate(config):
@@ -103,6 +106,7 @@ def reinitialize_model(model, probability=0.0, reset_stage_idx=None, final_layer
     raise ValueError('Incorrect resnet depth')
   if reset_stage_idx is not None:
       residual_blocks = residual_blocks[reset_stage_idx:reset_stage_idx + 1]
+      print('---> reset_blocks:', residual_blocks, flush=True)
   if final_layer_reset is not None:
       residual_blocks = residual_blocks[-1*final_layer_reset:]
   if unit_2_reset is not None:
@@ -130,8 +134,8 @@ def reinitialize_model(model, probability=0.0, reset_stage_idx=None, final_layer
                             layer.moving_mean_initializer,
                             layer.moving_variance_initializer]
   for w, init in zip(weights, initializers):
-    w.assign(init(w.shape, dtype=w.dtype))
-
+    rand_w = init(w.shape, dtype=w.dtype)
+    w.assign((1-FLAGS.inter_weight)*rand_w + FLAGS.inter_weight*w[0])
 
 def _extract_hyperparameter_dictionary():
   """Create the dictionary of hyperparameters from FLAGS."""
@@ -176,6 +180,7 @@ def main(argv):
   logging.get_absl_handler().setFormatter(formatter)
   del argv  # unused arg
 
+  logging.info(FLAGS.flag_values_dict())
   tf.io.gfile.makedirs(FLAGS.output_dir)
   logging.info('Saving checkpoints at %s', FLAGS.output_dir)
   tf.random.set_seed(FLAGS.seed)
@@ -199,17 +204,7 @@ def main(argv):
     tf.tpu.experimental.initialize_tpu_system(resolver)
     strategy = tf.distribute.TPUStrategy(resolver)
 
-  ds_info = tfds.builder(FLAGS.dataset).info
   batch_size = FLAGS.per_core_batch_size * FLAGS.num_cores
-  train_dataset_size = (
-      ds_info.splits['train'].num_examples * FLAGS.train_proportion)
-  steps_per_epoch = int(train_dataset_size / batch_size)
-  logging.info('Steps per epoch %s', steps_per_epoch)
-  logging.info('Size of the dataset %s', ds_info.splits['train'].num_examples)
-  logging.info('Train proportion %s', FLAGS.train_proportion)
-  steps_per_eval = ds_info.splits['test'].num_examples // batch_size
-  num_classes = ds_info.features['label'].num_classes
-
   aug_params = {
       'augmix': FLAGS.augmix,
       'aug_count': FLAGS.aug_count,
@@ -252,8 +247,18 @@ def main(argv):
       'clean': strategy.experimental_distribute_dataset(clean_test_dataset),
   }
 
-
   train_dataset = strategy.experimental_distribute_dataset(train_dataset)
+
+  ds_info = tfds.builder(FLAGS.dataset, data_dir=FLAGS.data_dir).info
+  train_dataset_size = (
+      ds_info.splits['train'].num_examples * FLAGS.train_proportion)
+  steps_per_epoch = int(train_dataset_size / batch_size)
+  logging.info('Steps per epoch %s', steps_per_epoch)
+  logging.info('Size of the dataset %s', ds_info.splits['train'].num_examples)
+  logging.info('Train proportion %s', FLAGS.train_proportion)
+  steps_per_eval = ds_info.splits['test'].num_examples // batch_size
+  num_classes = ds_info.features['label'].num_classes
+
 
   steps_per_epoch = train_builder.num_examples // batch_size
   steps_per_eval = clean_test_builder.num_examples // batch_size
@@ -295,6 +300,7 @@ def main(argv):
         reshaped_inputs = tf.image.resize(inputs, [224,224], method='bicubic')
         rescaled_inputs = reshaped_inputs * 255.
         resnet_trunk = ResNet((224, 224, 3), l2=FLAGS.l2, weights='imagenet', include_top=False)
+
         if FLAGS.reset_prob > 0.0:
             reinitialize_model(resnet_trunk, probability = FLAGS.reset_prob, reset_stage_idx=FLAGS.reset_stage, final_layer_reset=FLAGS.final_layer_reset, unit_2_reset=FLAGS.unit_2_reset)
         resnet_trunk_out = resnet_trunk(rescaled_inputs)
@@ -344,6 +350,8 @@ def main(argv):
             tf.keras.metrics.SparseCategoricalAccuracy(),
         'test/ece':
             rm.metrics.ExpectedCalibrationError(num_bins=FLAGS.num_bins),
+        'train/l2':
+            tf.keras.metrics.Mean()
     }
     if validation_dataset:
       metrics.update({
@@ -411,6 +419,7 @@ def main(argv):
 
       probs = tf.nn.softmax(logits)
       metrics['train/ece'].add_batch(probs, label=labels)
+      metrics['train/l2'].update_state(l2_loss)
       metrics['train/loss'].update_state(loss)
       metrics['train/negative_log_likelihood'].update_state(
           negative_log_likelihood)
@@ -538,9 +547,9 @@ def main(argv):
       corrupt_results = utils.aggregate_corrupt_metrics(corrupt_metrics,
                                                         corruption_types)
 
-    logging.info('Train Loss: %.4f, Accuracy: %.2f%%',
+    logging.info('Train Loss: %.4f, Accuracy: %.2f%%, L2: %.4f',
                  metrics['train/loss'].result(),
-                 metrics['train/accuracy'].result() * 100)
+                 metrics['train/accuracy'].result() * 100, metrics['train/l2'].result())
     logging.info('Test NLL: %.4f, Accuracy: %.2f%%',
                  metrics['test/negative_log_likelihood'].result(),
                  metrics['test/accuracy'].result() * 100)

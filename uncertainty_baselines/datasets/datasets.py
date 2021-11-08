@@ -47,6 +47,8 @@ from uncertainty_baselines.datasets.toxic_comments import CivilCommentsDataset
 from uncertainty_baselines.datasets.toxic_comments import CivilCommentsIdentitiesDataset
 from uncertainty_baselines.datasets.toxic_comments import WikipediaToxicityDataset
 
+from uncertainty_baselines.datasets.resisc45 import Resisc45Dataset
+
 try:
   from uncertainty_baselines.datasets.smcalflow import MultiWoZDataset  # pylint: disable=g-import-not-at-top
   from uncertainty_baselines.datasets.smcalflow import SMCalflowDataset  # pylint: disable=g-import-not-at-top
@@ -78,6 +80,7 @@ DATASETS = {
     'places365': Places365Dataset,
     'random_gaussian': RandomGaussianImageDataset,
     'random_rademacher': RandomRademacherImageDataset,
+    'resisc45': Resisc45Dataset,
     'simdial': SimDialDataset,
     'smcalflow': SMCalflowDataset,
     'speech_commands': SpeechCommandsDataset,

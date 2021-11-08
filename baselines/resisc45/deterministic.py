@@ -1,19 +1,5 @@
-# coding=utf-8
-# Copyright 2021 The Uncertainty Baselines Authors.
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
-
-"""ResNet50 trained with ML, GD on Kaggle's Diabetic Retinopathy Detection dataset.
+"""
+TODO
 """
 
 import os, sys
@@ -24,10 +10,8 @@ from absl import flags
 from absl import logging
 import tensorflow as tf
 import tensorflow_datasets as tfds
-import numpy as np
-
-import utils  # local file import
 from tensorboard.plugins.hparams import api as hp
+import numpy as np
 
 from classification_models.tfkeras import Classifiers
 import uncertainty_baselines as ub
@@ -43,12 +27,15 @@ tf.config.set_soft_device_placement(True)
 tf.config.threading.set_intra_op_parallelism_threads(1)
 tf.config.threading.set_inter_op_parallelism_threads(get_n_cores())
 
-DEFAULT_TRAIN_BATCH_SIZE = 128
-DEFAULT_NUM_EPOCHS = 200
+DEFAULT_TRAIN_BATCH_SIZE = 512
+DEFAULT_NUM_EPOCHS = 300
+TRAIN_SPLIT_PERCENT = 60
+VALIDATION_SPLIT_PERCENT = 20
+TEST_SPLIT_PERCENT = 20
 
 # Data load / output flags.
 flags.DEFINE_string(
-    'output_dir', '/tmp/diabetic_retinopathy_detection/deterministic',
+    'output_dir', '/tmp/resisc45/deterministic',
     'The directory where the model weights and training/evaluation summaries '
     'are stored. If you aim to use these as trained models for ensemble.py, '
     'you should specify an output_dir name that includes the random seed to '
@@ -57,7 +44,7 @@ flags.DEFINE_string('data_dir', None, 'Path to training and testing data.')
 flags.DEFINE_bool('use_validation', True, 'Whether to use a validation split.')
 
 # Learning rate / SGD flags.
-flags.DEFINE_float('base_learning_rate', 0.01, 'Base learning rate.') # 0.1
+flags.DEFINE_float('base_learning_rate', 0.01, 'Base learning rate.')
 flags.DEFINE_float('one_minus_momentum', 0.1, 'Optimizer momentum.')
 flags.DEFINE_integer(
     'lr_warmup_epochs', 1,
@@ -69,7 +56,7 @@ flags.DEFINE_list('lr_decay_epochs', ['60', '120', '160'],
 
 # General model flags.
 flags.DEFINE_integer('seed', 42, 'Random seed.')
-flags.DEFINE_float('l2', 1E-3, 'L2 regularization coefficient.') # 1E-1
+flags.DEFINE_float('l2', 1E-2, 'L2 regularization coefficient.')
 flags.DEFINE_integer('train_epochs', DEFAULT_NUM_EPOCHS,
                      'Number of training epochs.')
 flags.DEFINE_integer('train_batch_size', DEFAULT_TRAIN_BATCH_SIZE,
@@ -178,8 +165,7 @@ def main(argv):
     tf.tpu.experimental.initialize_tpu_system(resolver)
     strategy = tf.distribute.TPUStrategy(resolver)
 
-  # strategy = utils.init_distribution_strategy(FLAGS.force_use_cpu,
-  #                                             FLAGS.use_gpu, FLAGS.tpu)
+  # Initialize distribution strategy on flag-specified accelerator
   use_tpu = not (FLAGS.force_use_cpu or FLAGS.use_gpu)
 
   train_batch_size = FLAGS.train_batch_size * FLAGS.num_cores
@@ -188,14 +174,13 @@ def main(argv):
   data_dir = FLAGS.data_dir
 
   dataset_train_builder = ub.datasets.get(
-      'diabetic_retinopathy_detection', split='train', data_dir=data_dir, shuffle_buffer_size=1024, download_data=True)
+      'resisc45', split='train', data_dir=data_dir, download_data=True)
   dataset_train = dataset_train_builder.load(batch_size=train_batch_size)
 
   dataset_validation_builder = ub.datasets.get(
-      'diabetic_retinopathy_detection',
+      'resisc45',
       split='validation',
       data_dir=data_dir,
-      shuffle_buffer_size=1024,
       is_training=not FLAGS.use_validation,
       download_data=True)
   validation_batch_size = (
@@ -213,19 +198,16 @@ def main(argv):
   dataset_train = strategy.experimental_distribute_dataset(dataset_train)
 
   dataset_test_builder = ub.datasets.get(
-      'diabetic_retinopathy_detection', split='test', data_dir=data_dir)
+      'resisc45', split='test', data_dir=data_dir)
   dataset_test = dataset_test_builder.load(batch_size=eval_batch_size)
   dataset_test = strategy.experimental_distribute_dataset(dataset_test)
 
-  # As per the Kaggle challenge, we have split sizes:
-  # train: 35,126
-  # validation: 10,906 (currently unused)
-  # test: 42,670
-  ds_info = tfds.builder('diabetic_retinopathy_detection/btgraham-300', data_dir=FLAGS.data_dir).info
-  steps_per_epoch = ds_info.splits['train'].num_examples // train_batch_size
-  steps_per_validation_eval = (
-      ds_info.splits['validation'].num_examples // eval_batch_size)
-  steps_per_test_eval = ds_info.splits['test'].num_examples // eval_batch_size
+  ds_info = tfds.builder('resisc45', data_dir=FLAGS.data_dir).info
+  num_examples = ds_info.splits["train"].num_examples
+  steps_per_epoch = (num_examples * TRAIN_SPLIT_PERCENT // 100 ) // train_batch_size
+  steps_per_validation_eval = (num_examples * VALIDATION_SPLIT_PERCENT // 100) // eval_batch_size
+  steps_per_test_eval = (num_examples * TEST_SPLIT_PERCENT // 100) // eval_batch_size
+  num_classes = 45
 
   if FLAGS.use_bfloat16:
     policy = tf.keras.mixed_precision.experimental.Policy('mixed_bfloat16')
@@ -247,7 +229,6 @@ def main(argv):
           reinitialize_model(resnet_trunk, probability = FLAGS.reset_prob, reset_stage_idx=FLAGS.reset_stage, final_layer_reset=FLAGS.final_layer_reset, unit_2_reset=FLAGS.unit_2_reset)
       resnet_trunk_out = resnet_trunk(rescaled_inputs)
       pooled_resnet = tf.keras.layers.GlobalAveragePooling2D()(resnet_trunk_out)
-      num_classes = 5
       output = tf.keras.layers.Dense(num_classes, kernel_initializer=tf.keras.initializers.HeNormal(),
               kernel_regularizer=tf.keras.regularizers.l2(FLAGS.l2),
               bias_regularizer=tf.keras.regularizers.l2(FLAGS.l2))(pooled_resnet)
@@ -255,7 +236,7 @@ def main(argv):
     # else:
     #   model = resnet50_deterministic(
     #       input_shape=utils.load_input_shape(dataset_train),
-    #       num_classes=1)  # binary classification task
+    #       num_classes=num_classes)
     
     logging.info('Model input shape: %s', model.input_shape)
     logging.info('Model output shape: %s', model.output_shape)
@@ -274,10 +255,25 @@ def main(argv):
         warmup_epochs=FLAGS.lr_warmup_epochs)
     optimizer = tf.keras.optimizers.SGD(
         lr_schedule, momentum=1.0 - FLAGS.one_minus_momentum, nesterov=True)
-    metrics = utils.get_diabetic_retinopathy_base_metrics(
-        use_tpu=use_tpu,
-        num_bins=FLAGS.num_bins,
-        use_validation=FLAGS.use_validation)
+    metrics = {
+        'train/negative_log_likelihood':
+            tf.keras.metrics.Mean(),
+        'train/accuracy':
+            tf.keras.metrics.CategoricalAccuracy(),
+        'train/loss':
+            tf.keras.metrics.Mean(),
+        'test/negative_log_likelihood':
+            tf.keras.metrics.Mean(),
+        'test/accuracy':
+            tf.keras.metrics.CategoricalAccuracy(),
+        'train/l2':
+            tf.keras.metrics.Mean()
+    }
+    if FLAGS.use_validation:
+      metrics.update({
+          'validation/negative_log_likelihood': tf.keras.metrics.Mean(),
+          'validation/accuracy': tf.keras.metrics.CategoricalAccuracy(),
+      })
     checkpoint = tf.train.Checkpoint(model=model, optimizer=optimizer)
     latest_checkpoint = tf.train.latest_checkpoint(FLAGS.output_dir)
     initial_epoch = 0
@@ -288,12 +284,6 @@ def main(argv):
       logging.info('Loaded checkpoint %s', latest_checkpoint)
       initial_epoch = optimizer.iterations.numpy() // steps_per_epoch
 
-  # Define metrics outside the accelerator scope for CPU eval.
-  # This will cause an error on TPU.
-  if not use_tpu:
-    metrics.update(
-        utils.get_diabetic_retinopathy_cpu_metrics(
-            use_validation=FLAGS.use_validation))
   metrics.update({'test/ms_per_example': tf.keras.metrics.Mean()})
 
   @tf.function
@@ -316,7 +306,7 @@ def main(argv):
                 y_pred=logits,
                 from_logits=True))
         l2_loss = sum(model.losses)
-        loss = negative_log_likelihood + l2_loss
+        loss = negative_log_likelihood + (FLAGS.l2 * l2_loss)
 
         # Scale the loss given the TPUStrategy will reduce sum all gradients.
         scaled_loss = loss / strategy.num_replicas_in_sync
@@ -325,10 +315,11 @@ def main(argv):
       optimizer.apply_gradients(zip(grads, model.trainable_variables))
       probs = tf.nn.softmax(logits)
 
+      metrics['train/l2'].update_state(l2_loss)
       metrics['train/loss'].update_state(loss)
       metrics['train/negative_log_likelihood'].update_state(
           negative_log_likelihood)
-      metrics['train/accuracy'].update_state(labels, probs)
+      metrics['train/accuracy'].update_state(labels, logits)
 
     for i in tf.range(tf.cast(steps_per_epoch, tf.int32)):
       strategy.run(step_fn, args=(next(iterator),))
@@ -359,12 +350,19 @@ def main(argv):
     for i in tf.range(tf.cast(num_steps, tf.int32)):
       strategy.run(step_fn, args=(next(iterator),))
 
+  metrics.update({'test/ms_per_example': tf.keras.metrics.Mean()})
+  metrics.update({'train/ms_per_example': tf.keras.metrics.Mean()})
   start_time = time.time()
-
+  
   train_iterator = iter(dataset_train)
   for epoch in range(initial_epoch, FLAGS.train_epochs):
-    logging.info('Starting to run epoch: %s', epoch + 1)
+    logging.info('Starting to run epoch: %s', epoch)
+    # if tb_callback:
+    #   tb_callback.on_epoch_begin(epoch)
+    train_start_time = time.time()
     train_step(train_iterator)
+    ms_per_example = (time.time() - train_start_time) * 1e6 / train_batch_size
+    metrics['train/ms_per_example'].update_state(ms_per_example)
 
     current_step = (epoch + 1) * steps_per_epoch
     max_steps = steps_per_epoch * FLAGS.train_epochs
@@ -373,31 +371,35 @@ def main(argv):
     eta_seconds = (max_steps - current_step) / steps_per_sec
     message = ('{:.1%} completion: epoch {:d}/{:d}. {:.1f} steps/s. '
                'ETA: {:.0f} min. Time elapsed: {:.0f} min'.format(
-                   current_step / max_steps, epoch + 1, FLAGS.train_epochs,
-                   steps_per_sec, eta_seconds / 60, time_elapsed / 60))
+                   current_step / max_steps,
+                   epoch + 1,
+                   FLAGS.train_epochs,
+                   steps_per_sec,
+                   eta_seconds / 60,
+                   time_elapsed / 60))
     logging.info(message)
+    # if tb_callback:
+    #   tb_callback.on_epoch_end(epoch)
 
     if FLAGS.use_validation:
       validation_iterator = iter(dataset_validation)
-      logging.info('Starting to run validation eval at epoch: %s', epoch + 1)
-      test_step(validation_iterator, 'validation', steps_per_validation_eval)
+      test_step(
+          validation_iterator, 'validation', steps_per_validation_eval)
 
     test_iterator = iter(dataset_test)
-    logging.info('Starting to run test eval at epoch: %s', epoch + 1)
+    logging.info('Starting to run eval at epoch: %s', epoch)
     test_start_time = time.time()
     test_step(test_iterator, 'test', steps_per_test_eval)
     ms_per_example = (time.time() - test_start_time) * 1e6 / eval_batch_size
     metrics['test/ms_per_example'].update_state(ms_per_example)
 
-    # Log and write to summary the epoch metrics
-    utils.log_epoch_metrics(metrics=metrics, use_tpu=use_tpu)
+    logging.info('Train Loss: %.4f, Accuracy: %.2f%%, L2: %.4f',
+                 metrics['train/loss'].result(),
+                 metrics['train/accuracy'].result() * 100, metrics['train/l2'].result())
+    logging.info('Test NLL: %.4f, Accuracy: %.2f%%',
+                 metrics['test/negative_log_likelihood'].result(),
+                 metrics['test/accuracy'].result() * 100)
     total_results = {name: metric.result() for name, metric in metrics.items()}
-    # Metrics from Robustness Metrics (like ECE) will return a dict with a
-    # single key/value, instead of a scalar.
-    total_results = {
-        k: (list(v.values())[0] if isinstance(v, dict) else v)
-        for k, v in total_results.items()
-    }
     with summary_writer.as_default():
       for name, result in total_results.items():
         tf.summary.scalar(name, result, step=epoch + 1)
@@ -411,21 +413,9 @@ def main(argv):
           os.path.join(FLAGS.output_dir, 'checkpoint'))
       logging.info('Saved checkpoint to %s', checkpoint_name)
 
-      # TODO(nband): debug checkpointing
-      # Also save Keras model, due to checkpoint.save issue
-      keras_model_name = os.path.join(FLAGS.output_dir,
-                                      f'keras_model_{epoch + 1}')
-      model.save(keras_model_name)
-      logging.info('Saved keras model to %s', keras_model_name)
-
   final_checkpoint_name = checkpoint.save(
       os.path.join(FLAGS.output_dir, 'checkpoint'))
   logging.info('Saved last checkpoint to %s', final_checkpoint_name)
-
-  keras_model_name = os.path.join(FLAGS.output_dir,
-                                  f'keras_model_{FLAGS.train_epochs}')
-  model.save(keras_model_name)
-  logging.info('Saved keras model to %s', keras_model_name)
   with summary_writer.as_default():
     hp.hparams({
         'base_learning_rate': FLAGS.base_learning_rate,

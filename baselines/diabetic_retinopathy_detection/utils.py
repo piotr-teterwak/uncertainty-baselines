@@ -19,7 +19,7 @@ import functools
 import logging
 import os
 from typing import Any, Dict, List, Optional, Union
-from deferred_prediction import negative_log_likelihood_metric
+# from deferred_prediction import negative_log_likelihood_metric
 import robustness_metrics as rm
 import tensorflow as tf
 import tensorflow.keras.backend as K
@@ -146,7 +146,7 @@ def get_diabetic_retinopathy_test_metric_fns(use_tpu: bool):
     test_metric_fns, dict containing our test metrics and preprocessing methods
   """
   test_metric_fns = {
-      'negative_log_likelihood': negative_log_likelihood_metric,
+      'negative_log_likelihood': None,
       'accuracy': None,
       'auprc': None,
       'auroc': None
@@ -173,7 +173,7 @@ def get_diabetic_retinopathy_test_metric_classes(use_tpu: bool, num_bins: int):
   """
   test_metric_classes = {
       'negative_log_likelihood': tf.keras.metrics.Mean,
-      'accuracy': tf.keras.metrics.BinaryAccuracy
+      'accuracy': tf.keras.metrics.CategoricalAccuracy
   }
 
   if use_tpu:
@@ -227,8 +227,8 @@ def get_diabetic_retinopathy_base_test_metrics(
       use_tpu=use_tpu, num_bins=num_bins)
 
   # Create a test metric for each deferred prediction fraction
-  test_metrics.update(
-      get_test_metrics(test_metric_classes, deferred_prediction_fractions))
+  # test_metrics.update(
+  #     get_test_metrics(test_metric_classes, deferred_prediction_fractions))
 
   return test_metrics
 
@@ -266,15 +266,15 @@ def get_diabetic_retinopathy_base_metrics(
   """
   metrics = {
       'train/negative_log_likelihood': tf.keras.metrics.Mean(),
-      'train/accuracy': tf.keras.metrics.BinaryAccuracy(),
+      'train/accuracy': tf.keras.metrics.CategoricalAccuracy(), #
       'train/loss': tf.keras.metrics.Mean(),  # NLL + L2
       'test/negative_log_likelihood': tf.keras.metrics.Mean(),
-      'test/accuracy': tf.keras.metrics.BinaryAccuracy(),
+      'test/accuracy': tf.keras.metrics.CategoricalAccuracy(), #
   }
   if use_validation:
     metrics.update({
         'validation/negative_log_likelihood': tf.keras.metrics.Mean(),
-        'validation/accuracy': tf.keras.metrics.BinaryAccuracy(),
+        'validation/accuracy': tf.keras.metrics.CategoricalAccuracy(), #
     })
 
   if use_tpu:
@@ -304,8 +304,8 @@ def get_diabetic_retinopathy_base_metrics(
       use_tpu=use_tpu, num_bins=num_bins)
 
   # Create a test metric for each deferred prediction fraction
-  metrics.update(
-      get_test_metrics(test_metric_classes, deferred_prediction_fractions))
+  # metrics.update(
+  #     get_test_metrics(test_metric_classes, deferred_prediction_fractions))
 
   return metrics
 
@@ -339,8 +339,8 @@ def get_diabetic_retinopathy_cpu_test_metrics(
   }
 
   # Create a test metric for each deferred prediction fraction
-  test_metrics.update(
-      get_test_metrics(test_metric_classes, deferred_prediction_fractions))
+  # test_metrics.update(
+  #     get_test_metrics(test_metric_classes, deferred_prediction_fractions))
 
   return test_metrics
 
@@ -385,8 +385,8 @@ def get_diabetic_retinopathy_cpu_metrics(
   }
 
   # Create a test metric for each deferred prediction fraction
-  metrics.update(
-      get_test_metrics(test_metric_classes, deferred_prediction_fractions))
+  # metrics.update(
+  #     get_test_metrics(test_metric_classes, deferred_prediction_fractions))
 
   return metrics
 
@@ -398,37 +398,16 @@ def log_epoch_metrics(metrics, use_tpu):
     metrics: dict, contains all train/test metrics evaluated for the run.
     use_tpu: bool, is run using TPU.
   """
-  if use_tpu:
-    logging.info(
-        'Train Loss (NLL+L2): %.4f, Accuracy: %.2f%%, '
-        'AUPRC: %.2f%%, AUROC: %.2f%%', metrics['train/loss'].result(),
-        metrics['train/accuracy'].result() * 100,
-        metrics['train/auprc'].result() * 100,
-        metrics['train/auroc'].result() * 100)
-    logging.info(
-        'Test NLL: %.4f, Accuracy: %.2f%%, '
-        'AUPRC: %.2f%%, AUROC: %.2f%%',
-        metrics['test/negative_log_likelihood'].result(),
-        metrics['test/accuracy'].result() * 100,
-        metrics['test/auprc'].result() * 100,
-        metrics['test/auroc'].result() * 100)
-  else:
-    logging.info(
-        'Train Loss (NLL+L2): %.4f, Accuracy: %.2f%%, '
-        'AUPRC: %.2f%%, AUROC: %.2f%%, ECE: %.2f%%',
-        metrics['train/loss'].result(),
-        metrics['train/accuracy'].result() * 100,
-        metrics['train/auprc'].result() * 100,
-        metrics['train/auroc'].result() * 100,
-        metrics['train/ece'].result()['ece'] * 100)
-    logging.info(
-        'Test NLL: %.4f, Accuracy: %.2f%%, '
-        'AUPRC: %.2f%%, AUROC: %.2f%%, ECE: %.2f%%',
-        metrics['test/negative_log_likelihood'].result(),
-        metrics['test/accuracy'].result() * 100,
-        metrics['test/auprc'].result() * 100,
-        metrics['test/auroc'].result() * 100,
-        metrics['test/ece'].result()['ece'] * 100)
+
+  logging.info(
+      'Train Loss (NLL+L2): %.4f, Accuracy: %.2f%%, '
+      'NLL: %.4f', metrics['train/loss'].result(),
+      metrics['train/accuracy'].result() * 100,
+      metrics['train/negative_log_likelihood'].result())
+  logging.info(
+      'Test NLL: %.4f, Accuracy: %.2f%%',
+      metrics['test/negative_log_likelihood'].result(),
+      metrics['test/accuracy'].result() * 100)
 
 
 # Checkpoint write/load.

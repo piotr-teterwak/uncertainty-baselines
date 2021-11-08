@@ -24,7 +24,7 @@ class DiabeticRetinopathyDetectionDatasetTest(ub.datasets.DatasetTest):
   def testDatasetSize(self):
     super()._testDatasetSize(
         ub.datasets.DiabeticRetinopathyDetectionDataset,
-        image_size=(512, 512, 3))
+        image_size=(224, 224, 3))
 
 
 if __name__ == "__main__":
